@@ -47,23 +47,22 @@ Notes:
 */
 
 #include <ESP8266WiFi.h>          // https://github.com/esp8266/Arduino
-//#include <ESP8266WebServer.h>
-#include <WiFiManager.h>         //https://github.com/tzapu/WiFiManager
+#include <WiFiManager.h>          // https://github.com/tzapu/WiFiManager
+#include <WiFiUDP.h>
+#include <NTPClient.h>            // https://github.com/arduino-libraries/NTPClient
 #include <I2Cdev.h>               // https://github.com/jrowberg/i2cdevlib
 #include <MPU6050.h>
-//#include <DNSServer.h>
 #include <Ticker.h>
 #include <SPI.h>
 #include <SD.h>
 
-
-const int chipSelect = D8;
-
 const String versionNumber = "1.0";
-
 boolean recording = false;
-String filename = "ov1.txt";
-String message;
+String filename = "";
+String prefix = "OV";
+String message = "";
+String messageType;
+
 File dataFile;
 
 std::unique_ptr<ESP8266WebServer> server;
@@ -89,6 +88,9 @@ int16_t gx, gy, gz;
 
 #define LED_PIN 13
 bool blinkState = false;
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP,"time.nist.gov",-14400,100);
 
 void tick()
 {
@@ -120,67 +122,79 @@ void handleRoot() {
   Serial.println(message);
   */
   message="";
-  if ( server->hasArg("start") && server->hasArg("filename") && server->arg("filename") != "" ) {
-    Serial.println(server->arg("filename"));
-    filename = server->arg("filename");
+  if (server->hasArg("start") && server->hasArg("prefix")) {
+    String daTime=getTime();
+    filename = server->arg("prefix") + daTime + ".csv";
     dataFile = SD.open(filename, FILE_WRITE);
     if (dataFile) {
-      dataFile.println("Starting Data Log");
+      Serial.println("Starting Data Log on: " + filename);
       recording = true;
-      message = "";
-      dataFile.close();
+      message = "Started Data Log on" + filename;
+      messageType = "alert-info";
+      dataFile.println("AX,AY,AZ");
+      //Serial.println("AX,AY,AZ");
+      ticker.attach(0.2, tick);
     } else {
+      Serial.println ("Warning: Could not open '" + filename + "'.");
       message = "Warning: Could not open '" + filename + "'.";
+      messageType = "alert-warning";
       recording = false;
+      ticker.detach();
     }
   } else if (server->hasArg("stop")) {
     recording = false;
     dataFile.close();
     message = "Logging stopped.";
+    messageType = "alert-success";
+    Serial.println("Stopped Data Log on: " + filename);
   }
   server->send ( 200, "text/html", getPage() );
 }
 
 String getPage(){
-  String page = "<html lang='en'><head>";
+  String page = "<html lang='en'><head><title>OpenVibe</title>";
   page += "<link rel='stylesheet' href='https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css'><script src='https://ajax.googleapis.com/ajax/libs/jquery/3.1.1/jquery.min.js'></script><script src='https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js'></script>";
-  page += "<title><a href='https://github.com/joseamirandavelez/OpenVibe'>OpenVibe v1.0</a></title></head><body>";
+  page += "<title><a href='https://github.com/joseamirandavelez/OpenVibe'>OpenVibe v1.0</a></title></head><body style='margin-left:10pt'>";
   page += "<div class='container-fluid'>";
   page +=   "<div class='row'>";
   page +=     "<div class='col-md-12'>";
-  page +=       "<h1>OpenVibe 1.0</h1>";
+  page +=       "<h1>OpenVibe " + versionNumber + "</h1>";
   page +=       "<div class='row'>";
-  page +=       "<ul class='nav nav-pills'>";
-  page +=         "<li class='active'>";
-  page +=           "<a href='#'> <span class='badge pull-right'>";
-  page +=           "</span> Data</a>";
-  page +=         "</li><li>";
-  page +=           "<a href='#'> <span class='badge pull-right'>";
-  page +=           "</span> Settings</a>";
-  page +=         "</li><li>";
-  page +=           "<a href='#'> <span class='badge pull-right'>";
-  page +=           "</span> Help</a></li>";
-  page +=       "</ul>";
+  page +=         "<ul class='nav nav-pills'>";
+  page +=          "<li class='active'>";
+  page +=             "<a href='#'> <span class='badge pull-right'>";
+  page +=             "</span> Data</a>";
+  page +=           "</li><li>";
+  page +=             "<a href='#'> <span class='badge pull-right'>";
+  page +=             "</span> Settings</a>";
+  page +=           "</li><li>";
+  page +=             "<a href='#'> <span class='badge pull-right'>";
+  page +=             "</span> Help</a></li>";
+  page +=         "</ul>";
   page +=       "</div>";
-  page +=       "<div class='row'>";
-  page +=         "<h3>Logging</h3>";
-  page +=         "<div class='col-md-4'><form action='/' method='POST'>";
-  page +=           "<label for='filename'>Filename:</label><input type='text' class='form-control' name='filename' value='" + filename + "'>";
-
+  page +=       "<h3>Logging</h3>";
+  page +=       "<form action='/' method='POST'>";
+  page +=         "<div class='row'><div class='col-sm-2'><label for='filename'>Filename prefix:</label><input type='text' class='form-control' name='prefix' value='" + prefix + "' maxlength='2'></div></div>";
+  page +=         "<div class='row'><div class='col-sm-2'>Prefix must be no more than 2 letters.</div></div>";
+  page +=         "<div class='row'><div class='col-sm-2'>";
   if (!recording) {
-    page +=           "<button type='button submit' name='start' value='1' class='btn btn-success btn-lg'>Start</button></form></div>";     
+    page +=         "<button type='button submit' name='start' value='1' class='btn btn-success btn-lg'>Start</button>";     
   } else {
-    page +=           "<button type='button submit' name='stop' value='1' class='btn btn-success btn-lg'>Stop</button></form></div>";     
+    page +=         "<button type='button submit' name='stop' value='1' class='btn btn-success btn-lg'>Stop</button>";     
   }
-if (message.length() > 0) {
-  page +=   "<div class='alert alert-danger'>";
-  page +=     message;
+  page +=         "</div></div>";
+  page +=       "</form>";
+  page +=     "</div>";
   page +=   "</div>";
-}
- 
-  page +=       "</div>";
-  page +=     "<br><p>Source: <a href='https://github.com/joseamirandavelez/OpenVibe'>https://github.com/joseamirandavelez/OpenVibe</p>";
-  page += "</div></div></div>";
+  page += "</div>";
+  if (message.length() > 0) {
+    page += "<div class='row'><div class='col-md-4'><div class='alert " + messageType + " fade in'>";
+    page +=   message;
+    page += "</div></div></div>";
+  }
+  
+  page +=   "<footer class='footer'><div class='container'>Source: <a href='https://github.com/joseamirandavelez/OpenVibe'>https://github.com/joseamirandavelez/OpenVibe</div></footer>";
+  page +=  "</div></div></div>";
   page += "</body></html>";
   return page;
 }
@@ -227,18 +241,44 @@ void printDirectory(File dir, int numTabs) {
 void setup() {
   // Using pin 0 (D3) for SDA, and pin 2 (D4) for SCL on Wemos D1 Mini for simplicity of connections wit MPU6050 module
   Wire.begin(0,2);
-  Serial.begin(115200);
+  Serial.begin(9600);
 
-  //set led pin as output
-  pinMode(BUILTIN_LED, OUTPUT);
-  // start ticker with 0.5 because we start in AP mode and try to connect
-  ticker.attach(0.6, tick);
+  Serial.println ("\n\nOpenVibe v" + versionNumber);
+
+  Serial.print("\nInitializing Accelerometer...  ");
+  accelgyro.initialize();
+  Serial.println(accelgyro.testConnection() ? "Done!" : "Failed");
+
+  // Set Accelerometer offsets. Use IMU_Zero.ini sketch in the i2cdevlib library examples folder to get these values.
+  accelgyro.setXAccelOffset(-3750);
+  accelgyro.setYAccelOffset(-5900);
+  accelgyro.setZAccelOffset(913);
+  accelgyro.setXGyroOffset(-32);
+  accelgyro.setYGyroOffset(-50);
+  accelgyro.setZGyroOffset(-4);
+
+  Serial.print("Initializing SD card...  ");
+  // see if the card is present and can be initialized:
+  if (!SD.begin(4)) {
+    Serial.println("Card initialization failed. Check if the card is inserted. Otherwise, check if it is formatted.");
+    // don't do anything more:
+    return;
+  }
+  Serial.println("Done!");
+
 
   //WiFiManager
+  Serial.print("Initializing Wifi...  ");
+  //set led pin as output
+  pinMode(LED_PIN, OUTPUT);
+  // start ticker with 0.5 because we start in AP mode and try to connect
+  ticker.attach(0.6, tick);
   //Local intialization. Once its business is done, there is no need to keep it around
   WiFiManager wifiManager;
+  wifiManager.setDebugOutput(false);
   //wifiManager.resetSettings();    //reset saved setting
-  wifiManager.setAPCallback(configModeCallback);
+  wifiManager.setAPCallback(configModeCallback); 
+  wifiManager.setSTAStaticIPConfig(IPAddress(192, 168, 0, 100), IPAddress(192, 168, 0, 1), IPAddress(255, 255, 255, 0));
 
   //check if wifi settings saved in EEPROM work. Create Access Point otherwise.
   String ssidString = "OpenVibe_" + String(ESP.getChipId());
@@ -251,12 +291,12 @@ void setup() {
     delay(1000);
   }
 
-  //if you get here you have connected to the WiFi
-  Serial.println("Connected to WiFi!");
+  Serial.println("Done!");
   ticker.detach();
   digitalWrite(BUILTIN_LED, LOW);   //keep LED on
 
   //initialize web server
+  Serial.print("Initializing HTTP server...  ");
   server.reset(new ESP8266WebServer(WiFi.localIP(), 80));
   server->on("/", handleRoot);
   server->on("/inline", []() {
@@ -264,49 +304,47 @@ void setup() {
   });
   server->onNotFound(handleNotFound);
   server->begin();
-  Serial.println("HTTP server started");
-  Serial.println(WiFi.localIP());
+  Serial.print("Done! (IP address: ");
+  Serial.print(WiFi.localIP());
+  Serial.println(")");
 
-  Serial.println("Initializing I2C devices...");
-  accelgyro.initialize();
+  timeClient.begin();
+}
 
-  // verify connection
-  Serial.println("Testing device connections...");
-  Serial.println(accelgyro.testConnection() ? "MPU6050 connection successful" : "MPU6050 connection failed");
+String getTime() {
+  timeClient.setTimeOffset(-14400);
+  timeClient.update();
+  unsigned long rawTime = timeClient.getEpochTime();
+  unsigned long hours = (rawTime % 86400L) / 3600;
+  String hoursStr = hours < 10 ? "0" + String(hours) : String(hours);
 
-  // Set Accelerometer offsets. Use IMU_Zero.ini sketch in the i2cdevlib library examples folder to get these values.
-  Serial.println("Updating internal sensor offsets...");
-  accelgyro.setXAccelOffset(-3750);
-  accelgyro.setYAccelOffset(-5900);
-  accelgyro.setZAccelOffset(913);
-  accelgyro.setXGyroOffset(-32);
-  accelgyro.setYGyroOffset(-50);
-  accelgyro.setZGyroOffset(-4);
+  unsigned long minutes = (rawTime % 3600) / 60;
+  String minuteStr = minutes < 10 ? "0" + String(minutes) : String(minutes);
 
-  
-  Serial.print("Initializing SD card...");
-  // see if the card is present and can be initialized:
-  if (!SD.begin(chipSelect)) {
-    Serial.println("Card failed, or not present");
-    // don't do anything more:
-    return;
-  }
-  Serial.println("card initialized.");
+  unsigned long seconds = rawTime % 60;
+  String secondStr = seconds < 10 ? "0" + String(seconds) : String(seconds);
 
-  File root;
-  root = SD.open("/");
-  printDirectory(root, 0);
-  
-  
-  // configure Arduino LED for
-  pinMode(LED_PIN, OUTPUT);
+  return hoursStr + "" + minuteStr + "" + secondStr;
 }
 
 void loop() {
   server->handleClient();
   // read raw accel/gyro measurements from device
   accelgyro.getAcceleration(&ax, &ay, &az);
-  //Serial.println(az); //Serial.print("\t");
+  if(recording){
+    /*
+    Serial.print(ax);
+    Serial.print(",");
+    Serial.print(ay);
+    Serial.print(",");
+    Serial.println(az);
+    */
+    dataFile.print(ax);
+    dataFile.print(",");
+    dataFile.print(ay);
+    dataFile.print(",");
+    dataFile.println(az);
+  }
 
   //blinkState = !blinkState;
   //digitalWrite(LED_PIN, blinkState);

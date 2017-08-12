@@ -148,7 +148,7 @@ void handleRoot() {
     messageType = "alert-success";
     Serial.println("Stopped Data Log on: " + filename);
   }
-  server->send ( 200, "text/html", getPage() );
+  server->send (200, "text/html", getPage());
 }
 
 String getPage(){
@@ -309,6 +309,14 @@ void setup() {
   Serial.println(")");
 
   timeClient.begin();
+  timeClient.setTimeOffset(-14400);
+  timeClient.update();
+  Serial.print("Current Time: ");
+  Serial.print(timeClient.getHours());
+  Serial.print(":");
+  Serial.print(timeClient.getMinutes());
+  Serial.print(":");
+  Serial.print(timeClient.getSeconds());
 }
 
 String getTime() {
